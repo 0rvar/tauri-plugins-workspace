@@ -75,6 +75,7 @@ impl<R: Runtime, T: Manager<R>> UpdaterExt<R> for T {
             target,
             version_comparator,
             headers,
+            skip_current_process_args,
         } = self.state::<UpdaterState>().inner();
 
         let mut builder = UpdaterBuilder::new(app, config.clone()).headers(headers.clone());
@@ -83,9 +84,11 @@ impl<R: Runtime, T: Manager<R>> UpdaterExt<R> for T {
             builder = builder.target(target);
         }
 
-        let args = self.env().args_os;
-        if !args.is_empty() {
-            builder = builder.current_exe_args(args);
+        if !skip_current_process_args {
+            let args = self.env().args_os;
+            if !args.is_empty() {
+                builder = builder.current_exe_args(args);
+            }
         }
 
         builder.version_comparator = version_comparator.clone();
@@ -122,6 +125,7 @@ struct UpdaterState {
     config: Config,
     version_comparator: Option<VersionComparator>,
     headers: HeaderMap,
+    skip_current_process_args: bool,
 }
 
 #[derive(Default)]
@@ -131,11 +135,27 @@ pub struct Builder {
     installer_args: Vec<OsString>,
     headers: HeaderMap,
     default_version_comparator: Option<VersionComparator>,
+    skip_current_process_args: bool,
 }
 
 impl Builder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Controls whether the current process's command-line arguments are forwarded
+    /// to the installer during updates.
+    ///
+    /// By default (`true`), when an update is installed on Windows, the application's
+    /// command-line arguments are forwarded to the newly installed executable.
+    /// This can be problematic for applications that use specific arguments
+    /// for different modes of operation (e.g., a process monitor pattern).
+    ///
+    /// Set to `false` to prevent argument forwarding, ensuring the updated
+    /// application starts fresh without any arguments.
+    pub fn forward_current_process_args(mut self, forward: bool) -> Self {
+        self.skip_current_process_args = !forward;
+        self
     }
 
     pub fn target(mut self, target: impl Into<String>) -> Self {
@@ -212,6 +232,7 @@ impl Builder {
         let version_comparator = self.default_version_comparator;
         let installer_args = self.installer_args;
         let headers = self.headers;
+        let skip_current_process_args = self.skip_current_process_args;
         PluginBuilder::<R, Config>::new("updater")
             .setup(move |app, api| {
                 let mut config = api.config().clone();
@@ -226,6 +247,7 @@ impl Builder {
                     config,
                     version_comparator,
                     headers,
+                    skip_current_process_args,
                 });
                 Ok(())
             })
