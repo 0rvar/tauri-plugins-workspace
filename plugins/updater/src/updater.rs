@@ -786,15 +786,14 @@ impl Update {
     /// └── ...
     fn install_inner(&self, bytes: &[u8]) -> Result<()> {
         use std::iter::once;
-        use windows_sys::{
-            w,
-            Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOW},
-        };
 
+        log::info!("extracting update package ({} bytes)", bytes.len());
         let updater_type = self.extract(bytes)?;
+        log::info!("extraction complete");
 
         let install_mode = self.config.install_mode();
-        let current_args = &self.current_exe_args()[1..];
+        let current_exe_args = self.current_exe_args();
+        let current_args = current_exe_args.get(1..).unwrap_or_default();
         let msi_args;
         let nsis_args;
 
@@ -839,28 +838,21 @@ impl Update {
             on_before_exit();
         }
 
-        let file = match &updater_type {
-            WindowsUpdaterType::Nsis { path, .. } => path.as_os_str().to_os_string(),
-            WindowsUpdaterType::Msi { .. } => std::env::var("SYSTEMROOT").as_ref().map_or_else(
-                |_| OsString::from("msiexec.exe"),
-                |p| OsString::from(format!("{p}\\System32\\msiexec.exe")),
-            ),
+        let exe = match &updater_type {
+            WindowsUpdaterType::Nsis { path, .. } => path.clone(),
+            WindowsUpdaterType::Msi { .. } => {
+                let system_root =
+                    std::env::var("SYSTEMROOT").unwrap_or_else(|_| "C:\\Windows".to_string());
+                PathBuf::from(format!("{system_root}\\System32\\msiexec.exe"))
+            }
         };
-        let file = encode_wide(file);
 
-        let parameters = installer_args.join(OsStr::new(" "));
-        let parameters = encode_wide(parameters);
+        log::info!("launching installer: {:?} {:?}", exe, installer_args);
 
-        unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                w!("open"),
-                file.as_ptr(),
-                parameters.as_ptr(),
-                std::ptr::null(),
-                SW_SHOW,
-            )
-        };
+        // Use Command (CreateProcessW) instead of ShellExecuteW. ShellExecuteW
+        // uses DDE internally which requires a message pump on the calling thread
+        // and can hang indefinitely on threads without one.
+        let _ = std::process::Command::new(exe).args(installer_args).spawn();
 
         std::process::exit(0);
     }
